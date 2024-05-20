@@ -6,6 +6,7 @@ use App\Models\ChatContact;
 use App\Models\Group;
 use App\Models\Message;
 use App\Models\User;
+use Carbon\Carbon;
 use Illuminate\Support\Facades\Auth;
 
 
@@ -57,6 +58,114 @@ Route::get('/v1/chat/contacts-testing', function () {
     ]);
     // dd($users);
     // return view('welcome',['categories' => $categories]);
+});
+
+
+Route::post('/v2/send-message/chat-id/{chat_id}', function ($chat_id, Request $request) {
+
+    if (request('delete_mode') == 'on') {
+        Message::where('id', $request->id)->update([
+            'message' => 'Message Deleted',
+            'is_deleted' => 1
+        ]);
+
+        return;
+    }
+
+    if(request()->has('is_group') && request('is_group'))
+    {
+        if(request('edit_mode') == 'on')
+        {
+
+            Message::where('id', $request->id)->update([
+                'group_id' => $request->group_id,
+                'message' => $request->message,
+                'sender_id' => $request->sender_id,
+                'is_edited' => 1
+            ]);
+
+            return;
+        }
+
+        $message = Message::insert([
+            // 'chat_contact_id' => $chat_id,
+            'sender_id' => Auth::id(),
+            // 'receiver_id' => $request->receiver_id,
+            'group_id' => $request->group_id,
+            'message' => $request->message,
+            'created_at' => now(),
+            'updated_at' => now()
+
+        ]);
+
+        Group::where('id',$request->group_id)->update([
+            'last_seen_message' => $request->message,
+        ]);
+
+        return;
+
+    }
+
+    if(request()->has('is_group') && !request('is_group'))
+    {
+
+        if (request('edit_mode') == 'on') {
+            Message::where('id', $request->id)->update([
+                'message' => $request->message,
+                'is_edited' => 1
+            ]);
+
+            return;
+        }
+
+        //file upload code lies here
+        \DB::transaction(function() use($request) {
+
+            if ($request->hasFile('file')) {
+                $imagePath = $request->file('file')->store('avatars','public'); // Store the image in the 'avatars' directory
+                // You may need to configure the storage disk and path according to your requirements
+            }
+            
+            $group = Group::create([
+                'sender_id' => $request->user_id,
+                'receiver_id' => $request->receiver_id,
+                'channel_id' => $request->channel_id,
+                'message' => $request->message,
+            ]);
+    
+            $insertGroupUsers = [];
+            // print_r(request('users'));
+            // dd(explode(',',request('users')));
+            foreach(explode(',',request('users')) as $userId)
+            {
+                $insertGroupUsers[] = [
+                    'group_id' => $group->id,
+                    'user_id'  => $userId 
+                ];
+            }
+    
+            \DB::table('group_user')->insert($insertGroupUsers);
+
+        });
+
+        Message::insert([
+            'chat_contact_id' => $chat_id,
+            'sender_id' => $request->user_id,
+            'receiver_id' => $request->receiver_id,
+            'channel_id' => $request->channel_id,
+            'message' => $request->message,
+            'created_at' => now(),
+            'updated_at' => now()
+
+        ]);
+
+        ChatContact::where('id', $chat_id)->update([
+            'last_seen_message' => $request->message
+        ]);
+
+        return response()->json('Message Sent');
+    }
+
 });
 
 Route::middleware(['auth:sanctum'])->group(function () {
@@ -113,20 +222,34 @@ Route::middleware(['auth:sanctum'])->group(function () {
         // $users = User::withWhereHas('messages',function($query) use($contact_user_id) {
         //     $query->where('chat_contact_id',$contact_user_id);
         // })->get()->toArray();
-        if (request()->has('group_id')) {
+        $messages = [];
+        if (request()->has('group_id') && !is_null(request('group_id'))) {
 
-            $messages = Message::with('receiver', 'sender')->where('group_id', request('group_id'))->paginate($pageSize);
+            $messages = Message::with('receiver', 'sender')->where('group_id', request('group_id'))->orderBy('id', 'desc')->paginate($pageSize);
         
-        } else {
+            $messages = $messages->reverse();
 
-            $messages = Message::with('receiver', 'sender')->where('channel_id', request('contact_user_id'))->latest()->orderBy('created_at', 'asc')->paginate($pageSize);
+            $lastSeenMessageId = Group::where('group_id',request('group_id'))->first()->last_seen_message_id;
+            $unreadMessagesCount = Message::where('group_id', request('group_id'))
+            ->where('id', '>', $lastSeenMessageId)
+            ->count() ?? 0;
+
+        } elseif(!is_null(request('contact_user_id'))) {
+
+            
+            $messages = Message::with('receiver', 'sender','reply')->where('channel_id', request('contact_user_id'))->orderBy('id', 'desc')->paginate($pageSize);
             
             $messages = $messages->reverse();
+
+            $lastSeenMessageId = ChatContact::where('channel_id',request('contact_user_id'))->first()->last_seen_message_id;
+            $unreadMessagesCount = Message::where('channel_id', request('contact_user_id'))
+            ->where('id', '>', $lastSeenMessageId)
+            ->count() ?? 0;
         }
 
-        $messages = MessageResource::collection($messages);
+        $groupedMessages = MessageResource::collection($messages);
 
-        return response()->json(['data' => $messages]);
+        return response()->json(['data' => $groupedMessages, 'unread_messages_count' => $unreadMessagesCount]);
         // dd($users);
         // return view('welcome',['categories' => $categories]);
     });
@@ -286,7 +409,8 @@ Route::middleware(['auth:sanctum'])->group(function () {
                 'group_id' => $request->group_id,
                 'message' => $request->message,
                 'created_at' => now(),
-                'updated_at' => now()
+                'updated_at' => now(),
+                'reply_id' => $request->reply_id ?? null,
     
             ]);
 
@@ -309,25 +433,30 @@ Route::middleware(['auth:sanctum'])->group(function () {
     
                 return;
             }
-    
+            
           
     
-            Message::insert([
+            $message = Message::insert([
                 'chat_contact_id' => $chat_id,
                 'sender_id' => Auth::id(),
                 'receiver_id' => $request->receiver_id,
                 'channel_id' => $request->channel_id,
                 'message' => $request->message,
+                'reply_id' => $request->reply_id ?? null,
                 'created_at' => now(),
                 'updated_at' => now()
     
             ]);
     
             ChatContact::where('id', $chat_id)->update([
-                'last_seen_message' => $request->message
+                'last_seen_message' => $request->message,
+                'last_seen_message_id' => Message::latest()->first()->id ?? null
             ]);
     
-            return response()->json('Message Sent');
+            return response()->json([
+                'message' => 'Message Sent',
+                'data' => new MessageResource(Message::latest()->first())
+            ]);
         }
 
     });

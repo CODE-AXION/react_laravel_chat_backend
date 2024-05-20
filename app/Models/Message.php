@@ -27,4 +27,11 @@ class Message extends Model
     {
         return $this->belongsTo(ChatContact::class,'chat_contact_id');
     }
+
+    public function reply()
+    {
+        return $this->belongsTo(Message::class,'reply_id');
+    }
+
+    
 }
