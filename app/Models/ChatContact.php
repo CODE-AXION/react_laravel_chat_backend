@@ -12,7 +12,7 @@ class ChatContact extends Pivot
 
     protected $table = "chat_contacts";
 
-    protected $fillable = ['user_id','message','contact_user_id','last_seen_message_id'];
+    protected $fillable = ['user_id','message','contact_user_id','last_seen_message_id','reciever_id'];
 
     public function owner()
     {

@@ -223,16 +223,18 @@ Route::middleware(['auth:sanctum'])->group(function () {
         //     $query->where('chat_contact_id',$contact_user_id);
         // })->get()->toArray();
         $messages = [];
+        $unreadMessagesCount = 0;
+        $maxId = 0;
         if (request()->has('group_id') && !is_null(request('group_id'))) {
 
             $messages = Message::with('receiver', 'sender')->where('group_id', request('group_id'))->orderBy('id', 'desc')->paginate($pageSize);
         
             $messages = $messages->reverse();
 
-            $lastSeenMessageId = Group::where('group_id',request('group_id'))->first()->last_seen_message_id;
-            $unreadMessagesCount = Message::where('group_id', request('group_id'))
-            ->where('id', '>', $lastSeenMessageId)
-            ->count() ?? 0;
+            // $lastSeenMessageId = Group::where('group_id',request('group_id'))->first()->last_seen_message_id;
+            // $unreadMessagesCount = Message::where('group_id', request('group_id'))
+            // ->where('id', '>', $lastSeenMessageId)
+            // ->count() ?? 0;
 
         } elseif(!is_null(request('contact_user_id'))) {
 
@@ -241,15 +243,16 @@ Route::middleware(['auth:sanctum'])->group(function () {
             
             $messages = $messages->reverse();
 
-            $lastSeenMessageId = ChatContact::where('channel_id',request('contact_user_id'))->first()->last_seen_message_id;
-            $unreadMessagesCount = Message::where('channel_id', request('contact_user_id'))
-            ->where('id', '>', $lastSeenMessageId)
-            ->count() ?? 0;
+            // $lastSeenMessageId = ChatContact::where('channel_id',request('contact_user_id'))->first()->last_seen_message_id;
+            // $unreadMessagesCount = Message::where('channel_id', request('contact_user_id'))
+            // ->where('id', '>', $lastSeenMessageId)
+            // ->count() ?? 0;
+            $maxId = $messages->max()->id ?? 0;
         }
 
         $groupedMessages = MessageResource::collection($messages);
 
-        return response()->json(['data' => $groupedMessages, 'unread_messages_count' => $unreadMessagesCount]);
+        return response()->json(['data' => $groupedMessages, 'max_id' => $maxId ,'unread_messages_count' => 0]);
         // dd($users);
         // return view('welcome',['categories' => $categories]);
     });
@@ -450,7 +453,8 @@ Route::middleware(['auth:sanctum'])->group(function () {
     
             ChatContact::where('id', $chat_id)->update([
                 'last_seen_message' => $request->message,
-                'last_seen_message_id' => Message::latest()->first()->id ?? null
+                'last_seen_message_id' => Message::latest()->first()->id ?? null,
+                'reciever_id' => $request->receiver_id,
             ]);
     
             return response()->json([
@@ -497,4 +501,59 @@ Route::middleware(['auth:sanctum'])->group(function () {
     
     });
 
+    Route::post('/v1/markAsSeen', function (Request $request) {
+
+        $receiver_id = request('receiver_id');
+        $last_seen_message_id = $request->input('last_seen_message_id');
+
+        $chat_id = $request->input('chat_id');
+
+        $chatContact = ChatContact::where('id', $chat_id)->first();
+
+        if ($chatContact) {
+
+            $chatContact->update([
+                'last_seen_message_id' => $last_seen_message_id,
+                'reciever_id' => $receiver_id
+            ]);
+
+            return response()->json(['message' => 'Message marked as seen.']);
+        }
+
+        return response()->json(['message' => 'Chat contact not found.'], 404);
+    });
+
+    Route::get('/v1/check/new-messages', function (Request $request) {
+
+        $receiver_id = request('receiver_id');
+        $last_seen_message_id = $request->input('last_seen_message_id');
+
+        $chat_id = $request->input('chat_id');
+
+        $chatContact = ChatContact::where('id', $chat_id)->first();
+
+              
+        $maxId = Message::where('channel_id', request('chat_id'))
+        ->where('receiver_id',$receiver_id)
+        ->selectRaw('MAX(id) as max_id')
+        ->value('max_id');
+        if($maxId != $last_seen_message_id)
+        {
+
+            $count = Message::where('channel_id', request('chat_id'))
+                ->where('receiver_id', $receiver_id)
+                ->whereBetween('id', [$last_seen_message_id, $maxId])
+                ->count();
+                 
+            $count = $count - 1;
+
+        }else{
+
+            $count = 0;
+        }
+
+        
+        return response()->json(['message' => 'Message marked as seen.', 'data' => ['max_id' => $maxId,'new_messages_count' => $count]]);
+
+    });
 });
